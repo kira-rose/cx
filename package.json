@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "cx": "./dist/index.js"
+    "cx": "./dist/index.js",
+    "qx": "./dist/qx.js"
   },
   "scripts": {
     "build": "tsc",
