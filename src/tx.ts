@@ -114,6 +114,26 @@ interface TaskStats {
   completionsByProject: Record<string, number>;
 }
 
+// JSON Schema for semantic fields
+interface FieldDefinition {
+  type: "string" | "date" | "number" | "boolean" | "array" | "duration";
+  description: string;
+  examples?: string[];
+  aliases?: string[]; // Alternative names that map to this field
+  enum?: string[]; // Allowed values for string types
+  category?: "core" | "relationship" | "recurrence" | "custom";
+}
+
+interface TaskSchema {
+  $schema: string;
+  $id: string;
+  title: string;
+  description: string;
+  version: number;
+  lastUpdated: string;
+  fields: Record<string, FieldDefinition>;
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -122,7 +142,115 @@ const CONFIG_DIR = join(homedir(), ".cx");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 const TASKS_DIR = join(CONFIG_DIR, "tasks");
 const INDEX_PATH = join(TASKS_DIR, "index.json");
+const SCHEMA_PATH = join(TASKS_DIR, "schema.json");
 const ARCHIVE_DIR = join(TASKS_DIR, "archive");
+
+const DEFAULT_SCHEMA: TaskSchema = {
+  $schema: "http://json-schema.org/draft-07/schema#",
+  $id: "tx-task-schema",
+  title: "Task Semantic Schema",
+  description: "Defines the semantic fields that can be extracted from task descriptions",
+  version: 1,
+  lastUpdated: new Date().toISOString(),
+  fields: {
+    // Core fields
+    action: {
+      type: "string",
+      description: "The core verb/action to be performed",
+      examples: ["update", "fix", "call", "review", "deploy", "write"],
+      category: "core",
+    },
+    summary: {
+      type: "string",
+      description: "A brief one-line summary of the task",
+      category: "core",
+    },
+    subject: {
+      type: "string",
+      description: "The project, system, or area this task relates to",
+      aliases: ["project"],
+      examples: ["webapp", "backend", "documentation"],
+      category: "core",
+    },
+    deadline: {
+      type: "date",
+      description: "When the task is due (ISO 8601 format YYYY-MM-DD)",
+      examples: ["2025-12-03", "2025-01-15"],
+      category: "core",
+    },
+    priority: {
+      type: "string",
+      description: "Task urgency level",
+      enum: ["urgent", "high", "normal", "low"],
+      category: "core",
+    },
+    people: {
+      type: "array",
+      description: "People mentioned or involved in the task",
+      examples: ["john_smith", "sarah"],
+      category: "core",
+    },
+    context: {
+      type: "string",
+      description: "GTD-style context indicating where/how the task can be done",
+      enum: ["@computer", "@phone", "@errands", "@home", "@work", "@anywhere"],
+      category: "core",
+    },
+    tags: {
+      type: "array",
+      description: "Categories or labels for the task",
+      category: "core",
+    },
+    effort: {
+      type: "duration",
+      description: "Estimated time/effort required",
+      enum: ["quick", "30min", "1hour", "2hours", "half-day", "full-day", "multi-day"],
+      category: "core",
+    },
+    energy: {
+      type: "string",
+      description: "Mental energy level required",
+      enum: ["high", "medium", "low"],
+      aliases: ["focus"],
+      category: "core",
+    },
+    task_type: {
+      type: "string",
+      description: "Category of task",
+      examples: ["bug_fix", "feature", "meeting", "communication", "review", "deployment", "research"],
+      category: "core",
+    },
+    // Relationship fields
+    blocks: {
+      type: "array",
+      description: "Task IDs that this task blocks",
+      category: "relationship",
+    },
+    related_to: {
+      type: "array",
+      description: "Related projects, tasks, or concepts",
+      category: "relationship",
+    },
+    depends_on: {
+      type: "array",
+      description: "Prerequisites or dependencies",
+      category: "relationship",
+    },
+    // Recurrence fields
+    recurrence_pattern: {
+      type: "string",
+      description: "How often the task repeats",
+      enum: ["daily", "weekly", "monthly", "yearly"],
+      category: "recurrence",
+    },
+    recurrence_day: {
+      type: "string",
+      description: "Specific day for recurrence",
+      examples: ["monday", "1st", "15th", "last"],
+      category: "recurrence",
+    },
+  },
+};
 
 const DEFAULT_CONFIG: Config = {
   provider: "bedrock",
@@ -340,6 +468,85 @@ function saveIndex(index: TaskIndex) {
   writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
 }
 
+function loadSchema(): TaskSchema {
+  ensureDirectories();
+  if (!existsSync(SCHEMA_PATH)) {
+    // Create default schema
+    const schema = { ...DEFAULT_SCHEMA, lastUpdated: new Date().toISOString() };
+    writeFileSync(SCHEMA_PATH, JSON.stringify(schema, null, 2));
+    return schema;
+  }
+  try {
+    const loaded = JSON.parse(readFileSync(SCHEMA_PATH, "utf-8")) as TaskSchema;
+    // Merge with defaults to ensure all core fields exist
+    for (const [key, def] of Object.entries(DEFAULT_SCHEMA.fields)) {
+      if (!loaded.fields[key]) {
+        loaded.fields[key] = def;
+      }
+    }
+    return loaded;
+  } catch {
+    return { ...DEFAULT_SCHEMA, lastUpdated: new Date().toISOString() };
+  }
+}
+
+function saveSchema(schema: TaskSchema) {
+  ensureDirectories();
+  schema.lastUpdated = new Date().toISOString();
+  writeFileSync(SCHEMA_PATH, JSON.stringify(schema, null, 2));
+}
+
+function addFieldToSchema(
+  schema: TaskSchema,
+  fieldName: string,
+  definition: Partial<FieldDefinition>
+): boolean {
+  // Normalize field name
+  const normalizedName = fieldName.toLowerCase().replace(/\s+/g, "_");
+
+  // Check if field already exists or is an alias
+  if (schema.fields[normalizedName]) {
+    return false; // Already exists
+  }
+
+  // Check if it's an alias of an existing field
+  for (const [existingName, existingDef] of Object.entries(schema.fields)) {
+    if (existingDef.aliases?.includes(normalizedName)) {
+      return false; // Is an alias
+    }
+  }
+
+  // Add new field
+  schema.fields[normalizedName] = {
+    type: definition.type || "string",
+    description: definition.description || `Auto-discovered field: ${normalizedName}`,
+    examples: definition.examples || [],
+    category: "custom",
+  };
+
+  schema.version++;
+  return true;
+}
+
+function resolveFieldName(schema: TaskSchema, fieldName: string): string {
+  const normalized = fieldName.toLowerCase().replace(/\s+/g, "_");
+
+  // Direct match
+  if (schema.fields[normalized]) {
+    return normalized;
+  }
+
+  // Check aliases
+  for (const [canonicalName, def] of Object.entries(schema.fields)) {
+    if (def.aliases?.includes(normalized)) {
+      return canonicalName;
+    }
+  }
+
+  // No match - return as-is (will be added as new field)
+  return normalized;
+}
+
 function loadTask(id: string): Task | null {
   const taskPath = join(TASKS_DIR, `${id}.json`);
   if (!existsSync(taskPath)) {
@@ -398,63 +605,66 @@ function findTaskByPrefix(prefix: string): Task | null {
 // SEMANTIC EXTRACTION
 // ============================================================================
 
-function getExtractionPrompt(index: TaskIndex): string {
+function formatSchemaForPrompt(schema: TaskSchema): string {
+  const byCategory: Record<string, string[]> = {
+    core: [],
+    relationship: [],
+    recurrence: [],
+    custom: [],
+  };
+
+  for (const [name, def] of Object.entries(schema.fields)) {
+    const category = def.category || "custom";
+    const aliasStr = def.aliases?.length ? ` (aliases: ${def.aliases.join(", ")})` : "";
+    const enumStr = def.enum?.length ? ` [${def.enum.join("|")}]` : "";
+    const exampleStr = def.examples?.length ? ` e.g. ${def.examples.slice(0, 2).join(", ")}` : "";
+    byCategory[category].push(`- ${name} (${def.type})${aliasStr}${enumStr}: ${def.description}${exampleStr}`);
+  }
+
+  let result = "";
+  if (byCategory.core.length) {
+    result += "\nCORE FIELDS:\n" + byCategory.core.join("\n");
+  }
+  if (byCategory.relationship.length) {
+    result += "\n\nRELATIONSHIP FIELDS:\n" + byCategory.relationship.join("\n");
+  }
+  if (byCategory.recurrence.length) {
+    result += "\n\nRECURRENCE FIELDS:\n" + byCategory.recurrence.join("\n");
+  }
+  if (byCategory.custom.length) {
+    result += "\n\nCUSTOM FIELDS (learned from previous tasks):\n" + byCategory.custom.join("\n");
+  }
+
+  return result;
+}
+
+function getExtractionPrompt(schema: TaskSchema, index: TaskIndex): string {
   const today = getToday();
   const dayOfWeek = getDayOfWeek();
 
-  const structureHints = Object.keys(index.structures).length > 0
-    ? `\nPreviously discovered fields:\n${Object.entries(index.structures)
-        .slice(0, 15)
-        .map(([k, v]) => `- ${k} (${v.type}): ${v.examples.slice(0, 2).join(", ")}`)
-        .join("\n")}`
-    : "";
-
-  const aliasHints = Object.keys(index.aliases).length > 0
-    ? `\nKnown aliases (use canonical form):\n${Object.entries(index.aliases)
-        .slice(0, 10)
-        .map(([canonical, variants]) => `- "${canonical}" = ${variants.join(", ")}`)
-        .join("\n")}`
-    : "";
+  const schemaFields = formatSchemaForPrompt(schema);
 
   const templateHints = Object.keys(index.templates).length > 0
-    ? `\nKnown task patterns:\n${Object.values(index.templates)
+    ? `\n\nKNOWN TASK PATTERNS:\n${Object.values(index.templates)
         .slice(0, 5)
         .map((t) => `- ${t.name}: ${t.pattern}`)
         .join("\n")}`
     : "";
 
-  return `You are a semantic extraction engine for task management. Extract ALL meaningful fields from task descriptions.
+  return `You are a semantic extraction engine for task management. Your job is to extract structured fields from natural language task descriptions.
 
 TODAY: ${dayOfWeek}, ${today}
 
-CORE FIELDS (extract when present):
-- action: The core verb/action (e.g., "update", "call", "fix", "review")
-- subject/project: Project, system, or area this relates to
-- deadline: When due (convert to ISO: ${today.slice(0, 8)}XX). "tuesday" = next tuesday, "tomorrow" = ${today} + 1 day
-- priority: urgent, high, normal, low (infer from language like "ASAP", "urgent", "when possible")
-- people: People mentioned (names)
-- context: GTD contexts (@home, @work, @computer, @phone, @errands, @anywhere)
-- tags: Categories or labels
-- effort: Estimated effort (quick, 30min, 1hour, half-day, multi-day)
-- energy: Required energy level (high/deep-work, medium, low/routine)
+SCHEMA - USE THESE FIELD NAMES:
+${schemaFields}
+${templateHints}
 
-RELATIONSHIP FIELDS:
-- blocks: If this task blocks something else mentioned
-- related_to: Related projects or tasks mentioned
-- depends_on: Dependencies mentioned
-
-RECURRENCE (if mentioned):
-- recurrence_pattern: daily, weekly, monthly, yearly
-- recurrence_day: specific day (monday, 1st, 15th, etc.)
-
-ADDITIONAL FIELDS:
-Extract ANY other meaningful semantic information. Be thorough and creative.
-${structureHints}${aliasHints}${templateHints}
-
-NORMALIZATION:
-- Normalize names to canonical form (e.g., "john", "John", "John Smith" → "john_smith")
-- Normalize project names consistently
-- Use lowercase snake_case for field names
+INSTRUCTIONS:
+1. Extract values for fields defined in the schema above
+2. Use the EXACT field names from the schema (prefer canonical names over aliases)
+3. For dates, convert to ISO format (YYYY-MM-DD). "tuesday" = next tuesday, "tomorrow" = ${today} + 1 day
+4. Normalize names to snake_case (e.g., "John Smith" → "john_smith")
+5. If you identify a meaningful field NOT in the schema, include it with a suggested type
 
 RESPOND WITH ONLY VALID JSON:
 {
@@ -463,25 +673,40 @@ RESPOND WITH ONLY VALID JSON:
     ...
   },
   "summary": "Brief one-line summary",
-  "suggestedTemplate": "template name if this matches a common pattern",
-  "recurrence": { "pattern": "weekly", "dayOfWeek": "monday" } // if recurring
-}`;
+  "newFields": [
+    { "name": "suggested_field_name", "type": "string|date|number|array", "description": "why this field is useful" }
+  ],
+  "recurrence": { "pattern": "weekly", "dayOfWeek": "monday" }
+}
+
+IMPORTANT:
+- Only include "newFields" if you discover semantic information that doesn't fit existing schema fields
+- New fields should be genuinely useful categories, not one-off values
+- Use existing schema fields whenever possible`;
+}
+
+interface NewFieldProposal {
+  name: string;
+  type: string;
+  description: string;
 }
 
 async function extractSemantics(
   raw: string,
   config: Config,
+  schema: TaskSchema,
   index: TaskIndex
 ): Promise<{
   fields: Record<string, SemanticField>;
   summary: string;
   recurrence?: Task["recurrence"];
   templateId?: string;
+  newFields?: NewFieldProposal[];
 }> {
   const model = createModel(config);
 
   const response = await model.invoke([
-    new SystemMessage(getExtractionPrompt(index)),
+    new SystemMessage(getExtractionPrompt(schema, index)),
     new HumanMessage(raw),
   ]);
 
@@ -496,11 +721,22 @@ async function extractSemantics(
 
   try {
     const parsed = JSON.parse(jsonMatch[0]);
+
+    // Normalize field names to schema canonical names
+    const normalizedFields: Record<string, SemanticField> = {};
+    for (const [key, value] of Object.entries(parsed.fields || {})) {
+      const canonicalName = resolveFieldName(schema, key);
+      normalizedFields[canonicalName] = value as SemanticField;
+    }
+
     return {
-      fields: parsed.fields || { action: { name: "action", value: raw } },
+      fields: Object.keys(normalizedFields).length > 0
+        ? normalizedFields
+        : { action: { name: "action", value: raw } },
       summary: parsed.summary || raw,
       recurrence: parsed.recurrence,
       templateId: parsed.suggestedTemplate,
+      newFields: parsed.newFields,
     };
   } catch {
     return { fields: { action: { name: "action", value: raw } }, summary: raw };
@@ -645,12 +881,13 @@ function updateTemplates(index: TaskIndex, task: Task, templateId?: string) {
 // TASK OPERATIONS
 // ============================================================================
 
-async function addTask(raw: string, config: Config, options: { blocks?: string } = {}): Promise<Task> {
+async function addTask(raw: string, config: Config, options: { blocks?: string } = {}): Promise<{ task: Task; schemaUpdated: boolean }> {
   const index = loadIndex();
+  const schema = loadSchema();
 
   console.log(`\x1b[90m⏳ Extracting semantic structure...\x1b[0m`);
 
-  const { fields, summary, recurrence, templateId } = await extractSemantics(raw, config, index);
+  const { fields, summary, recurrence, templateId, newFields } = await extractSemantics(raw, config, schema, index);
 
   // Add summary to fields
   fields.summary = { name: "summary", value: summary };
@@ -677,6 +914,24 @@ async function addTask(raw: string, config: Config, options: { blocks?: string }
     }
   }
 
+  // Handle new field proposals - add to schema
+  let schemaUpdated = false;
+  if (newFields && newFields.length > 0) {
+    for (const proposal of newFields) {
+      const added = addFieldToSchema(schema, proposal.name, {
+        type: proposal.type as FieldDefinition["type"],
+        description: proposal.description,
+      });
+      if (added) {
+        schemaUpdated = true;
+        console.log(`\x1b[35m  + Schema: added field "${proposal.name}" (${proposal.type})\x1b[0m`);
+      }
+    }
+    if (schemaUpdated) {
+      saveSchema(schema);
+    }
+  }
+
   updateStructures(index, fields);
   updateTemplates(index, task, templateId);
 
@@ -686,7 +941,7 @@ async function addTask(raw: string, config: Config, options: { blocks?: string }
   saveTask(task);
   saveIndex(index);
 
-  return task;
+  return { task, schemaUpdated };
 }
 
 async function completeTask(taskId: string, config: Config): Promise<Task | null> {
@@ -1102,6 +1357,93 @@ function showStructures() {
   console.log(`\x1b[36m└────────────────────────────────────────────────────┘\x1b[0m\n`);
 }
 
+function showSchema(outputJson = false) {
+  const schema = loadSchema();
+
+  if (outputJson) {
+    console.log(JSON.stringify(schema, null, 2));
+    return;
+  }
+
+  console.log(`\n\x1b[36m┌─ Task Schema (v${schema.version}) ─────────────────────────────┐\x1b[0m`);
+  console.log(`\x1b[90m  Last updated: ${new Date(schema.lastUpdated).toLocaleString()}\x1b[0m\n`);
+
+  const byCategory: Record<string, Array<[string, FieldDefinition]>> = {
+    core: [],
+    relationship: [],
+    recurrence: [],
+    custom: [],
+  };
+
+  for (const [name, def] of Object.entries(schema.fields)) {
+    const category = def.category || "custom";
+    byCategory[category].push([name, def]);
+  }
+
+  const typeColor: Record<string, string> = {
+    string: "\x1b[32m",
+    date: "\x1b[35m",
+    number: "\x1b[33m",
+    boolean: "\x1b[34m",
+    array: "\x1b[36m",
+    duration: "\x1b[33m",
+  };
+
+  const categoryLabels: Record<string, string> = {
+    core: "Core Fields",
+    relationship: "Relationship Fields",
+    recurrence: "Recurrence Fields",
+    custom: "Custom Fields (learned)",
+  };
+
+  for (const [category, fields] of Object.entries(byCategory)) {
+    if (fields.length === 0) continue;
+
+    console.log(`\x1b[35m━━ ${categoryLabels[category]} (${fields.length}) ━━\x1b[0m\n`);
+
+    for (const [name, def] of fields) {
+      const color = typeColor[def.type] || "\x1b[90m";
+      const aliasStr = def.aliases?.length ? ` \x1b[90m(aka: ${def.aliases.join(", ")})\x1b[0m` : "";
+      const enumStr = def.enum?.length ? `\n    \x1b[90mAllowed: ${def.enum.join(" | ")}\x1b[0m` : "";
+
+      console.log(`  \x1b[1m${name}\x1b[0m  ${color}${def.type}\x1b[0m${aliasStr}`);
+      console.log(`    ${def.description}${enumStr}`);
+      if (def.examples?.length) {
+        console.log(`    \x1b[90mExamples: ${def.examples.slice(0, 3).join(", ")}\x1b[0m`);
+      }
+      console.log();
+    }
+  }
+
+  console.log(`\x1b[36m└────────────────────────────────────────────────────┘\x1b[0m`);
+  console.log(`\n\x1b[90mSchema file: ${SCHEMA_PATH}\x1b[0m\n`);
+}
+
+function addSchemaField(name: string, type: string, description: string) {
+  const schema = loadSchema();
+
+  const validTypes = ["string", "date", "number", "boolean", "array", "duration"];
+  if (!validTypes.includes(type)) {
+    console.error(`\x1b[31mInvalid type: ${type}\x1b[0m`);
+    console.log(`\x1b[33mValid types: ${validTypes.join(", ")}\x1b[0m`);
+    return false;
+  }
+
+  const added = addFieldToSchema(schema, name, {
+    type: type as FieldDefinition["type"],
+    description,
+  });
+
+  if (added) {
+    saveSchema(schema);
+    console.log(`\x1b[32m✓ Added field "${name}" (${type}) to schema\x1b[0m`);
+    return true;
+  } else {
+    console.log(`\x1b[33mField "${name}" already exists in schema\x1b[0m`);
+    return false;
+  }
+}
+
 function showAliases() {
   const index = loadIndex();
 
@@ -1396,8 +1738,13 @@ function showHelp(config: Config) {
   tx --complete <id>                Complete task (tracks duration)
   tx --graph                        Show dependency graph
 
+\x1b[33mSchema:\x1b[0m
+  tx --schema                       View the semantic schema
+  tx --schema --json                Output schema as JSON
+  tx --schema-add <name> <type> <desc>  Add a field to schema
+
 \x1b[33mSemantics:\x1b[0m
-  tx --structures                   Discovered semantic fields
+  tx --structures                   Discovered field usage stats
   tx --aliases                      Known name variations
   tx --merge <canonical> <variant>  Manually merge aliases
   tx --templates                    Discovered task patterns
@@ -1448,6 +1795,23 @@ function parseArgs(args: string[]): ParsedArgs {
 
   if (simpleCommands[args[0]]) {
     result.command = simpleCommands[args[0]];
+    return result;
+  }
+
+  // Schema commands
+  if (args[0] === "--schema") {
+    result.command = "schema";
+    if (args[1] === "--json") {
+      result.flags.add("json");
+    }
+    return result;
+  }
+
+  if (args[0] === "--schema-add") {
+    result.command = "schema-add";
+    result.params.name = args[1] || "";
+    result.params.type = args[2] || "";
+    result.params.description = args.slice(3).join(" ");
     return result;
   }
 
@@ -1526,7 +1890,7 @@ function parseArgs(args: string[]): ParsedArgs {
 async function main() {
   const config = loadConfig();
   const args = process.argv.slice(2);
-  const { command, params } = parseArgs(args);
+  const { command, params, flags } = parseArgs(args);
 
   try {
     switch (command) {
@@ -1535,8 +1899,8 @@ async function main() {
         break;
 
       case "add":
-        const task = await addTask(params.raw, config, { blocks: params.blocks });
-        console.log(`\n\x1b[32m✓ Task added\x1b[0m\n`);
+        const { task, schemaUpdated } = await addTask(params.raw, config, { blocks: params.blocks });
+        console.log(`\n\x1b[32m✓ Task added\x1b[0m${schemaUpdated ? " \x1b[35m(schema updated)\x1b[0m" : ""}\n`);
         displayTask(task, { verbose: true });
         break;
 
@@ -1601,6 +1965,19 @@ async function main() {
           console.error(`\x1b[31mTask not found: ${params.id}\x1b[0m`);
           process.exit(1);
         }
+        break;
+
+      case "schema":
+        showSchema(flags.has("json"));
+        break;
+
+      case "schema-add":
+        if (!params.name || !params.type) {
+          console.error(`\x1b[31mUsage: tx --schema-add <name> <type> <description>\x1b[0m`);
+          console.log(`\x1b[33mTypes: string, date, number, boolean, array, duration\x1b[0m`);
+          process.exit(1);
+        }
+        addSchemaField(params.name, params.type, params.description || `Field: ${params.name}`);
         break;
 
       case "structures":

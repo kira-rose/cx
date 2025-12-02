@@ -272,6 +272,7 @@ tx --complete <id>              # Complete (tracks duration)
 ### Key Features
 
 - **Auto semantic extraction** — extracts project, deadline, priority, people, context, effort, energy
+- **JSON Schema** — formal schema defines and evolves with your semantic model (`tx --schema`)
 - **Natural language queries** — `tx --q "urgent tasks for supersonic"`
 - **Smart views** — `--today`, `--week`, `--overdue`, `--focus`, `--blocked`
 - **Task dependencies** — `tx deploy app --blocks abc123`

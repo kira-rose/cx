@@ -166,6 +166,113 @@ tx check email every morning
 
 ---
 
+## Schema
+
+The schema is a JSON Schema document that defines all valid semantic fields. It serves as the source of truth for field definitions and enables:
+
+- **Consistency** — prevents duplicate or conflicting field names
+- **Guidance** — the LLM uses the schema to extract fields correctly
+- **Tooling** — external tools can consume the schema to understand the data structure
+- **Evolution** — the schema grows as new fields are discovered
+
+### View Schema
+
+```bash
+tx --schema
+```
+
+Shows all defined fields organized by category:
+
+```
+┌─ Task Schema (v2) ─────────────────────────────┐
+  Last updated: 12/02/2025, 2:19:51 PM
+
+━━ Core Fields (11) ━━
+
+  action  string
+    The core verb/action to be performed
+    Examples: update, fix, call
+
+  subject  string (aka: project)
+    The project, system, or area this task relates to
+    Examples: webapp, backend, documentation
+
+  deadline  date
+    When the task is due (ISO 8601 format YYYY-MM-DD)
+
+  priority  string
+    Task urgency level
+    Allowed: urgent | high | normal | low
+
+━━ Custom Fields (learned) ━━
+
+  location  string
+    Physical location where the task should be done
+
+└────────────────────────────────────────────────────┘
+```
+
+### Export Schema as JSON
+
+```bash
+tx --schema --json
+```
+
+Outputs the full JSON Schema for machine consumption:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tx-task-schema",
+  "title": "Task Semantic Schema",
+  "version": 2,
+  "fields": {
+    "action": {
+      "type": "string",
+      "description": "The core verb/action to be performed",
+      "examples": ["update", "fix", "call"],
+      "category": "core"
+    },
+    ...
+  }
+}
+```
+
+### Add Custom Fields
+
+```bash
+tx --schema-add <name> <type> <description>
+tx --schema-add location string "Physical location where the task should be done"
+tx --schema-add sprint number "Sprint number for agile planning"
+```
+
+Valid types: `string`, `date`, `number`, `boolean`, `array`, `duration`
+
+### Automatic Schema Evolution
+
+When you add a task, the LLM may discover new semantic fields not in the schema. These are automatically proposed and added:
+
+```bash
+tx send quarterly report to the finance team
+
+⏳ Extracting semantic structure...
+  + Schema: added field "department" (string)
+
+✓ Task added (schema updated)
+```
+
+The schema version increments with each update, and the file is stored at `~/.cx/tasks/schema.json`.
+
+### Schema File Location
+
+```
+~/.cx/tasks/schema.json
+```
+
+You can edit this file directly if needed, though using `--schema-add` is recommended.
+
+---
+
 ## Semantic Discovery
 
 ### View Discovered Structures
@@ -174,7 +281,7 @@ tx check email every morning
 tx --structures
 ```
 
-Shows all fields the system has discovered across your tasks:
+Shows usage statistics for fields across your tasks (complementary to the schema):
 
 ```
 ┌─ Discovered Structures ────────────────────────────┐
@@ -413,11 +520,19 @@ Export tasks with deadlines as VTODO items for calendar apps.
 | `tx --complete <id>` | Complete task |
 | `tx --graph` | Show dependency graph |
 
+### Schema
+
+| Command | Description |
+|---------|-------------|
+| `tx --schema` | View the semantic schema |
+| `tx --schema --json` | Output schema as JSON |
+| `tx --schema-add <name> <type> <desc>` | Add a custom field |
+
 ### Semantics
 
 | Command | Description |
 |---------|-------------|
-| `tx --structures` | Show discovered fields |
+| `tx --structures` | Show field usage statistics |
 | `tx --aliases` | Show name variations |
 | `tx --merge <canonical> <variant>` | Merge aliases |
 | `tx --templates` | Show task patterns |
