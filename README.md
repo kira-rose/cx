@@ -1,9 +1,10 @@
-# cx & qx
+# cx, qx & tx
 
 Natural language shell tools, powered by LLMs.
 
 - **cx** — Natural language to shell commands
 - **qx** — Context-aware conversational queries
+- **tx** — Semantic task management
 
 ```bash
 $ cx find all typescript files that import express
@@ -26,6 +27,7 @@ Run this command? [y/N]: y
 - **Tool calling** — LLM investigates your system before suggesting commands
 - **Safe by default** — always prompts for confirmation before execution (cx)
 - **Conversation memory** — maintains context for follow-up questions (qx)
+- **Semantic extraction** — auto-discovers structure from natural language tasks (tx)
 
 ## Installation
 
@@ -34,7 +36,7 @@ git clone <repo>
 cd cx
 npm install
 npm run build
-npm link      # Installs both cx and qx globally
+npm link      # Installs cx, qx, and tx globally
 ```
 
 ## Configuration
@@ -239,6 +241,45 @@ qx --list
 qx --restore a3f2           # ✓ Works if prefix is unique
 qx --restore a              # ✗ Ambiguous if multiple match
 ```
+
+---
+
+## tx — Task Mode
+
+`tx` is a semantic task management system. Add tasks in natural language and the LLM automatically extracts structured fields like project, deadline, priority, and more. Query and organize tasks by any discovered field.
+
+```bash
+$ tx update insurance definitions in supersonic before tuesday
+⏳ Extracting semantic structure...
+
+✓ Task added
+
+○ 219834a3  update insurance definitions 📅 TODAY
+  subject: supersonic  deadline: 2025-12-02  priority: normal
+  context: @computer  task_type: data update
+```
+
+### Quick Start
+
+```bash
+tx <natural language task>      # Add a task
+tx --list                       # List all tasks
+tx --today                      # Due today
+tx --focus                      # AI-prioritized top tasks
+tx --complete <id>              # Complete (tracks duration)
+```
+
+### Key Features
+
+- **Auto semantic extraction** — extracts project, deadline, priority, people, context, effort, energy
+- **Natural language queries** — `tx --q "urgent tasks for supersonic"`
+- **Smart views** — `--today`, `--week`, `--overdue`, `--focus`, `--blocked`
+- **Task dependencies** — `tx deploy app --blocks abc123`
+- **Recurrence** — `tx check email every morning` auto-detects patterns
+- **Completion learning** — tracks duration and builds estimates by task type
+- **Export** — `tx --export markdown|json|ical`
+
+📖 **Full documentation:** [tx.md](./tx.md)
 
 ## License
 

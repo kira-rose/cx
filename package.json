@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "bin": {
     "cx": "./dist/index.js",
-    "qx": "./dist/qx.js"
+    "qx": "./dist/qx.js",
+    "tx": "./dist/tx.js"
   },
   "scripts": {
     "build": "tsc",
