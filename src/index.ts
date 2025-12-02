@@ -7,9 +7,10 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { createInterface } from "readline";
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, spawnSync } from "child_process";
 import { platform, homedir } from "os";
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, chmodSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 // Config types
@@ -161,6 +162,176 @@ const bashTool = tool(
   }
 );
 
+// Scripts directory for persistent scripts
+const SCRIPTS_DIR = join(CONFIG_DIR, "scripts");
+
+function ensureScriptsDir() {
+  if (!existsSync(SCRIPTS_DIR)) {
+    mkdirSync(SCRIPTS_DIR, { recursive: true });
+  }
+}
+
+// Helper for script confirmation prompt
+function askScriptConfirmation(question: string): Promise<boolean> {
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(question, (answer) => {
+      rl.close();
+      const normalized = answer.toLowerCase().trim();
+      resolve(normalized === "y" || normalized === "yes");
+    });
+  });
+}
+
+// Define the claude-code tool for creating and executing complex scripts
+const claudeCodeTool = tool(
+  async ({ script, language, args, name, save, execute }) => {
+    ensureScriptsDir();
+
+    // Determine file extension and interpreter based on language
+    const langConfig: Record<string, { ext: string; interpreter: string[] }> = {
+      bash: { ext: ".sh", interpreter: ["/bin/bash"] },
+      sh: { ext: ".sh", interpreter: ["/bin/sh"] },
+      zsh: { ext: ".zsh", interpreter: ["/bin/zsh"] },
+      python: { ext: ".py", interpreter: ["python3"] },
+      python3: { ext: ".py", interpreter: ["python3"] },
+      node: { ext: ".js", interpreter: ["node"] },
+      javascript: { ext: ".js", interpreter: ["node"] },
+      typescript: { ext: ".ts", interpreter: ["npx", "tsx"] },
+      ruby: { ext: ".rb", interpreter: ["ruby"] },
+      perl: { ext: ".pl", interpreter: ["perl"] },
+      php: { ext: ".php", interpreter: ["php"] },
+      lua: { ext: ".lua", interpreter: ["lua"] },
+      awk: { ext: ".awk", interpreter: ["awk", "-f"] },
+    };
+
+    const config = langConfig[language.toLowerCase()] || { ext: "", interpreter: [language] };
+    
+    // Generate script path - always save to scripts dir for review
+    const scriptName = name || `script_${Date.now()}`;
+    const scriptPath = join(SCRIPTS_DIR, `${scriptName}${config.ext}`);
+
+    // Write the script
+    writeFileSync(scriptPath, script, { encoding: "utf-8" });
+    
+    // Make executable if it's a shell script
+    if (["bash", "sh", "zsh"].includes(language.toLowerCase())) {
+      chmodSync(scriptPath, "755");
+    }
+
+    // Display script content for review
+    console.log(`\n\x1b[36m  ┌─ 📝 Script: ${scriptName}${config.ext} (${language}) ─────────────────────\x1b[0m`);
+    const lines = script.split("\n");
+    const maxLines = 50; // Limit display for very long scripts
+    const displayLines = lines.slice(0, maxLines);
+    for (let i = 0; i < displayLines.length; i++) {
+      const lineNum = String(i + 1).padStart(3, " ");
+      console.log(`\x1b[90m  │ \x1b[33m${lineNum}\x1b[90m │\x1b[0m ${displayLines[i]}`);
+    }
+    if (lines.length > maxLines) {
+      console.log(`\x1b[90m  │ ... (${lines.length - maxLines} more lines)\x1b[0m`);
+    }
+    console.log(`\x1b[36m  └──────────────────────────────────────────────────────────\x1b[0m`);
+    console.log(`\x1b[90m  📁 Saved to: ${scriptPath}\x1b[0m\n`);
+
+    // If execute is false or not specified, just save and return
+    if (!execute) {
+      const runCmd = `${config.interpreter.join(" ")} ${scriptPath}${args?.length ? " " + args.join(" ") : ""}`;
+      return `Script saved to: ${scriptPath}\n\nTo run it:\n  ${runCmd}`;
+    }
+
+    // Ask for confirmation before executing
+    const confirmed = await askScriptConfirmation(`\x1b[33m  Execute this script? [y/N]:\x1b[0m `);
+    
+    if (!confirmed) {
+      const runCmd = `${config.interpreter.join(" ")} ${scriptPath}${args?.length ? " " + args.join(" ") : ""}`;
+      return `Script saved but not executed (user declined).\n\nTo run it later:\n  ${runCmd}`;
+    }
+
+    console.log(`\x1b[90m  🚀 Executing: ${config.interpreter.join(" ")} ${scriptPath} ${args?.join(" ") || ""}\x1b[0m\n`);
+
+    try {
+      // Build command array
+      const cmdArgs = [...config.interpreter.slice(1), scriptPath, ...(args || [])];
+      
+      const result = spawnSync(config.interpreter[0], cmdArgs, {
+        encoding: "utf-8",
+        timeout: 120000, // 2 minutes for complex scripts
+        maxBuffer: 1024 * 1024 * 10, // 10MB buffer for larger outputs
+        env: process.env,
+        cwd: process.cwd(),
+      });
+
+      // Clean up temp script if not saving
+      if (!save) {
+        try {
+          unlinkSync(scriptPath);
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+
+      const output = (result.stdout || "") + (result.stderr ? `\nSTDERR:\n${result.stderr}` : "");
+      const trimmed = output.trim();
+
+      if (result.status !== 0) {
+        return `Script exited with code ${result.status}:\n${trimmed}`;
+      }
+
+      // Limit output to prevent token overflow
+      if (trimmed.length > 16000) {
+        return trimmed.slice(0, 16000) + "\n... (output truncated)";
+      }
+
+      const savedInfo = save ? `\n\n[Script saved to: ${scriptPath}]` : "";
+      return (trimmed || "(no output)") + savedInfo;
+    } catch (error) {
+      if (error instanceof Error) {
+        return `Script execution error: ${error.message}`;
+      }
+      return "Unknown error during script execution";
+    }
+  },
+  {
+    name: "claude_code",
+    description: `Create and execute complex multi-line scripts. Use this instead of bash when you need to:
+- Write scripts with multiple commands, loops, conditionals, or functions
+- Use languages other than bash (python, node, ruby, etc.)
+- Pass arguments to the script
+- Optionally save scripts for later reuse
+
+The script will be written to a file and executed with the appropriate interpreter.`,
+    schema: z.object({
+      script: z
+        .string()
+        .describe("The complete script content to execute. Can be multi-line with any complexity."),
+      language: z
+        .string()
+        .describe("The scripting language: bash, sh, zsh, python, python3, node, javascript, typescript, ruby, perl, php, lua, awk"),
+      args: z
+        .array(z.string())
+        .optional()
+        .describe("Optional array of arguments to pass to the script"),
+      name: z
+        .string()
+        .optional()
+        .describe("Optional name for the script. Defaults to a timestamp-based name."),
+      save: z
+        .boolean()
+        .optional()
+        .describe("If true, keep the script in ~/.cx/scripts/ after execution. Defaults to true."),
+      execute: z
+        .boolean()
+        .optional()
+        .describe("If true, execute the script immediately (with user confirmation). If false, just save it. Defaults to false - script is saved and user can run it via the final COMMAND."),
+    }),
+  }
+);
+
 function getSystemPrompt(): string {
   const osType = platform();
   const shell = process.env.SHELL || "/bin/bash";
@@ -173,19 +344,37 @@ ENVIRONMENT:
 - Shell: ${shell}
 - Current directory: ${cwd}
 
+AVAILABLE TOOLS:
+1. **bash** - Execute simple commands for investigation (ls, cat, grep, etc.)
+2. **claude_code** - Create complex scripts. Use this when you need:
+   - Multi-line scripts with loops, conditionals, or functions
+   - Scripts in languages other than bash (python, node, ruby, etc.)
+   - Scripts that need arguments passed to them
+   
+   IMPORTANT: By default, claude_code SAVES the script but does NOT execute it.
+   The script content is displayed for user review. Set execute:true only if you
+   need the output for further investigation (user will be prompted to confirm).
+
 WORKFLOW:
 1. When the user describes what they want to do, you may need to investigate the system first
-2. Use the bash tool to explore: list files, check paths, examine file contents, etc.
-3. Once you understand the context, provide the FINAL command for the user to run
+2. Use the bash tool for quick exploration: list files, check paths, examine file contents
+3. Use claude_code to CREATE scripts - they will be saved to ~/.cx/scripts/
+4. The user can review the script content before it's run
+5. Provide the FINAL command to run the script for the user to confirm
 
 RESPONSE FORMAT:
 After any investigation, your final response MUST end with the command in this exact format:
 
 COMMAND: <the complete command to run>
 
+For complex operations, create a script with claude_code and then return the run command:
+COMMAND: ~/.cx/scripts/<script_name>.sh [args]
+or
+COMMAND: python3 ~/.cx/scripts/<script_name>.py [args]
+
 RULES:
 - Always investigate when the request involves specific files, paths, or system state
-- Use bash tool calls to gather information before suggesting the final command
+- Use bash tool calls for simple exploration, claude_code for complex scripting
 - The COMMAND line should contain a single, complete, ready-to-execute command
 - If you cannot determine a valid command, explain why instead of providing COMMAND
 - For dangerous operations (rm -rf, etc), still provide the command - the user will confirm`;
@@ -201,7 +390,7 @@ async function getCommandFromLLM(
     throw new Error("Model does not support tool calling");
   }
   
-  const modelWithTools = model.bindTools([bashTool]);
+  const modelWithTools = model.bindTools([bashTool, claudeCodeTool]);
 
   const messages = [
     new SystemMessage(getSystemPrompt()),
@@ -222,6 +411,20 @@ async function getCommandFromLLM(
       for (const toolCall of response.tool_calls) {
         if (toolCall.name === "bash") {
           const result = await bashTool.invoke(toolCall.args as { command: string });
+          messages.push({
+            role: "tool",
+            content: result,
+            tool_call_id: toolCall.id,
+          } as never);
+        } else if (toolCall.name === "claude_code") {
+          const result = await claudeCodeTool.invoke(toolCall.args as {
+            script: string;
+            language: string;
+            args?: string[];
+            name?: string;
+            save?: boolean;
+            execute?: boolean;
+          });
           messages.push({
             role: "tool",
             content: result,
@@ -316,6 +519,8 @@ function showHelp(config: Config) {
   cx show disk usage sorted by size
   cx what processes are using the most memory
   cx find large files in my home directory
+  cx write a python script to parse json files and extract emails
+  cx create a bash script that backs up my documents folder
 
 \x1b[33mConfig:\x1b[0m
   ${CONFIG_PATH}
@@ -326,9 +531,19 @@ function showHelp(config: Config) {
   • \x1b[36mopenai\x1b[0m   - OpenAI-compatible APIs (OpenRouter, etc.)
   • \x1b[36mlocal\x1b[0m    - Local models (Ollama, LM Studio, etc.)
 
+\x1b[33mTools:\x1b[0m
+  • \x1b[36mbash\x1b[0m        - Execute simple commands for investigation
+  • \x1b[36mclaude_code\x1b[0m - Create & execute complex scripts (python, node, bash, etc.)
+
+\x1b[33mScripts:\x1b[0m
+  Saved scripts: ${SCRIPTS_DIR}/
+  Scripts can be saved for reuse with complex operations
+
 \x1b[33mFeatures:\x1b[0m
   • Tool calling for system investigation
   • Automatic context gathering before suggesting commands
+  • Multi-language script generation (bash, python, node, ruby, etc.)
+  • Script saving for frequently used operations
 `);
 }
 

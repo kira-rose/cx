@@ -1,10 +1,9 @@
-# cx, qx & tx
+# cx & qx
 
 Natural language shell tools, powered by LLMs.
 
 - **cx** — Natural language to shell commands
 - **qx** — Context-aware conversational queries
-- **tx** — Semantic task management
 
 ```bash
 $ cx find all typescript files that import express
@@ -27,7 +26,7 @@ Run this command? [y/N]: y
 - **Tool calling** — LLM investigates your system before suggesting commands
 - **Safe by default** — always prompts for confirmation before execution (cx)
 - **Conversation memory** — maintains context for follow-up questions (qx)
-- **Semantic extraction** — auto-discovers structure from natural language tasks (tx)
+- **Script generation** — create complex multi-language scripts with claude_code tool
 
 ## Installation
 
@@ -36,7 +35,7 @@ git clone <repo>
 cd cx
 npm install
 npm run build
-npm link      # Installs cx, qx, and tx globally
+npm link      # Installs cx and qx globally
 ```
 
 ## Configuration
@@ -138,27 +137,30 @@ cx find all branches that contain the word feature
 cx find all TODO comments in this project
 cx count lines of code by file type
 cx replace all tabs with spaces in python files
+
+# Complex scripts
+cx write a python script to parse json files and extract emails
+cx create a bash script that backs up my documents folder
 ```
 
 ## How It Works
 
 1. You describe what you want in natural language
-2. The LLM may use the **bash tool** to investigate your system:
-   - List directories
-   - Check file contents
-   - Examine system state
+2. The LLM may use tools to investigate your system:
+   - **bash** — quick commands for exploration
+   - **claude_code** — create complex multi-language scripts
 3. After gathering context, it suggests a command
 4. You confirm (`y`) or abort (`n`)
 5. If confirmed, the command runs with full terminal output
 
-## Tool Calling
+## Tools
 
-The LLM has access to a `bash` tool for system investigation. This allows it to:
-
-- Explore your file structure before suggesting `find` commands
-- Check what's running before suggesting `kill` commands  
-- Read config files to understand your setup
-- Verify paths and filenames exist
+### bash
+Simple commands for system investigation:
+- List directories
+- Check file contents
+- Examine system state
+- Verify paths and filenames
 
 Investigation commands are shown in gray:
 ```
@@ -166,7 +168,25 @@ Investigation commands are shown in gray:
   ⚡ Running: cat package.json | head -20
 ```
 
-Tool output is truncated at 8KB and times out after 30 seconds.
+### claude_code
+Create and execute complex scripts in multiple languages:
+- **Languages:** bash, python, node, typescript, ruby, perl, php, lua, awk
+- **Review first:** Script content is displayed with line numbers before execution
+- **Saved scripts:** Stored in `~/.cx/scripts/` for reuse
+
+```
+  ┌─ 📝 Script: backup.sh (bash) ─────────────────────
+  │   1 │ #!/bin/bash
+  │   2 │ set -e
+  │   3 │ tar -czvf backup.tar.gz ./documents
+  └──────────────────────────────────────────────────────
+  📁 Saved to: /Users/you/.cx/scripts/backup.sh
+
+▶ Suggested command:
+  ~/.cx/scripts/backup.sh
+
+Run this command? [y/N]:
+```
 
 ---
 
@@ -244,45 +264,6 @@ qx --restore a              # ✗ Ambiguous if multiple match
 
 ---
 
-## tx — Task Mode
-
-`tx` is a semantic task management system. Add tasks in natural language and the LLM automatically extracts structured fields like project, deadline, priority, and more. Query and organize tasks by any discovered field.
-
-```bash
-$ tx update insurance definitions in supersonic before tuesday
-⏳ Extracting semantic structure...
-
-✓ Task added
-
-○ 219834a3  update insurance definitions 📅 TODAY
-  subject: supersonic  deadline: 2025-12-02  priority: normal
-  context: @computer  task_type: data update
-```
-
-### Quick Start
-
-```bash
-tx <natural language task>      # Add a task
-tx --list                       # List all tasks
-tx --today                      # Due today
-tx --focus                      # AI-prioritized top tasks
-tx --complete <id>              # Complete (tracks duration)
-```
-
-### Key Features
-
-- **Auto semantic extraction** — extracts project, deadline, priority, people, context, effort, energy
-- **JSON Schema** — formal schema defines and evolves with your semantic model (`tx --schema`)
-- **Natural language queries** — `tx --q "urgent tasks for supersonic"`
-- **Smart views** — `--today`, `--week`, `--overdue`, `--focus`, `--blocked`
-- **Task dependencies** — `tx deploy app --blocks abc123`
-- **Recurrence** — `tx check email every morning` auto-detects patterns
-- **Completion learning** — tracks duration and builds estimates by task type
-- **Export** — `tx --export markdown|json|ical`
-
-📖 **Full documentation:** [tx.md](./tx.md)
-
 ## License
 
 MIT
-
